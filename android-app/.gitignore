@@ -1,0 +1,39 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Large ML Model Weights & Audio Binaries (Ignored for Git Push)
+*.bin
+*.onnx
+*.wav
+*.pcm
+*.pt
+*.safetensors
+
+# Python environment artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Python virtual envs & secrets
+venv/
+.venv/
+env/
+chatbot_env/
+.env
+.ipynb_checkpoints/
+
+# Local model folders used by voice scripts
+android_model_onnx/

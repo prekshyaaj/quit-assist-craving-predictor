@@ -1,0 +1,464 @@
+import torch
+import higher
+import random
+import os
+import csv
+import glob
+import json
+import re
+import typing
+import numpy as np
+
+def list_dir(root: str, prefix: bool = False) -> typing.List[str]:
+    """List all directories at a given root
+    Args:
+        root (str): Path to directory whose folders need to be listed
+        prefix (bool, optional): If true, prepends the path to each result, otherwise
+            only returns the name of the directories found
+    """
+    root = os.path.expanduser(root)
+    directories = [p for p in os.listdir(root) if os.path.isdir(os.path.join(root, p))]
+    if prefix is True:
+        directories = [os.path.join(root, d) for d in directories]
+    return directories
+
+
+def list_files(root: str, suffix: str, prefix: bool = False) -> typing.List[str]:
+    """List all files ending with a suffix at a given root
+    Args:
+        root (str): Path to directory whose folders need to be listed
+        suffix (str or tuple): Suffix of the files to match, e.g. '.png' or ('.jpg', '.png').
+            It uses the Python "str.endswith" method and is passed directly
+        prefix (bool, optional): If true, prepends the path to each result, otherwise
+            only returns the name of the files found
+    """
+    root = os.path.expanduser(root)
+    files = [p for p in os.listdir(root) if os.path.isfile(os.path.join(root, p)) and p.endswith(suffix)]
+    if prefix is True:
+        files = [os.path.join(root, d) for d in files]
+    return files
+
+def train_val_split(eps_data: typing.List[torch.Tensor], k_shot: int) -> typing.Dict[str, torch.Tensor]:
+    """Split data into train and validation
+
+    Args:
+        eps_data: a list of 2 tensors:
+            + first tensor: data
+            + second tensor: labels
+        k_shot: number of training data per class
+        shuffle: shuffle data before splitting
+
+    Returns: a dictionary containing data splitted
+    """
+    # get information of image size
+    nc, iH, iW = eps_data[0][0].shape
+
+    # get labels
+    labels, num_classes = normalize_labels(labels=eps_data[1])
+
+    v_shot = int(labels.numel() / num_classes) - k_shot
+
+    data = {
+        'x_t': torch.empty(size=(num_classes, k_shot, nc, iH, iW), device=eps_data[0].device),
+        'x_v': torch.empty(size=(num_classes, v_shot, nc, iH, iW), device=eps_data[0].device),
+        'y_t': torch.empty(size=(num_classes * k_shot,), dtype=torch.int64, device=eps_data[1].device),
+        'y_v': torch.empty(size=(num_classes * v_shot,), dtype=torch.int64, device=eps_data[1].device)
+    }
+    for cls_id in range(num_classes):
+        X = eps_data[0][labels == cls_id]
+        data['x_t'][cls_id, :, :, :, :] = X[:k_shot]
+        data['x_v'][cls_id, :, :, :, :] = X[k_shot:]
+
+        data['y_t'][k_shot * cls_id: k_shot * (cls_id + 1)] = torch.tensor(data=[cls_id] * k_shot, dtype=torch.int64, device=labels.device)
+        data['y_v'][v_shot * cls_id: v_shot * (cls_id + 1)] = torch.tensor(data=[cls_id] * v_shot, dtype=torch.int64, device=labels.device)
+
+    data['x_t'] = data['x_t'].view(num_classes * k_shot, nc, iH, iW)
+    data['x_v'] = data['x_v'].view(num_classes * v_shot, nc, iH, iW)
+
+    return data
+
+def normalize_labels(labels: torch.Tensor) -> typing.Tuple[torch.Tensor, int]:
+    """Normalize a list of labels, for example:
+    [11, 11, 20, 20, 60, 60, 6, 6] => [0, 0, 1, 1, 2, 2, 3, 3]
+    """
+    if labels.ndim > 1:
+        raise ValueError("Input must be a 1d tensor, not {}".format(labels.ndim))
+
+    out = torch.empty_like(input=labels, device=labels.device)
+    
+    label_dict = {}
+    for i in range(labels.numel()):
+        val = labels[i].item()
+        
+        if val not in label_dict:
+            label_dict[val] = torch.tensor(data=len(label_dict), device=labels.device)
+        
+        out[i] = label_dict[val]
+    
+    return out, len(label_dict)
+
+def train_val_split_regression(eps_data: typing.List[torch.Tensor], k_shot: int) -> typing.Dict[str, torch.Tensor]:
+    """split the data for regression
+    Args:
+        eps_data: a list of 2 tensors: x and y
+        k_shot:
+    """
+    data = {}
+    k_shot = int(k_shot)
+
+    v_ids = [i for i in range(eps_data[0].numel())]
+
+    k_ids = random.sample(population=v_ids, k=k_shot)
+    v_ids = [v for v in v_ids if v not in k_ids]
+
+    # Reshape each component to (num_samples, 1) so 1D inputs have feature dim 1
+    eps_data_batch = [eps_data[i].view(-1, 1) for i in range(len(eps_data))]
+
+    data['x_t'] = eps_data_batch[0][k_ids]
+    data['y_t'] = eps_data_batch[1][k_ids]
+    data['x_v'] = eps_data_batch[0][v_ids]
+    data['y_v'] = eps_data_batch[1][v_ids]
+
+    return data
+
+def get_episodes(episode_file_path: typing.Optional[str] = None, num_episodes: int = 100) -> typing.List[str]:
+    """Get episodes from a file
+
+    Args:
+        episode_file_path:
+        num_episodes: dummy variable in training to create an infinite
+            episode (str) generator. In testing, it defines how many
+            episodes to evaluate
+
+    Return: an episode (str) generator
+    """
+    # get episode list if not None
+    if episode_file_path is not None:
+        episodes = []
+        with open(file=episode_file_path, mode='r') as f_csv:
+            csv_rd = csv.reader(f_csv, delimiter=',')
+            episodes = list(csv_rd)
+    else:
+        episodes = [None] * num_episodes
+    
+    return episodes
+
+
+def _weights_init(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        if m.weight is not None:
+            torch.nn.init.kaiming_normal_(m.weight.data)
+        if m.bias is not None:
+            torch.nn.init.zeros_(m.bias.data)
+    elif classname.find('BatchNorm') != -1:
+        if m.weight is not None:
+            torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
+            torch.nn.init.constant_(m.bias.data, 0)
+
+def euclidean_distance(matrixN: torch.Tensor, matrixM: torch.Tensor) -> torch.Tensor:
+    """Calculate Euclidean distance from N points to M points
+
+    Args:
+        matrixN: an N x D matrix for N points
+        matrixM: a M x D matrix for M points
+
+    Returns: N x M matrix
+    """
+    N = matrixN.size(0)
+    M = matrixM.size(0)
+    D = matrixN.size(1)
+    assert D == matrixM.size(1)
+
+    matrixN = matrixN.unsqueeze(1).expand(N, M, D)
+    matrixM = matrixM.unsqueeze(0).expand(N, M, D)
+
+    return torch.norm(input=matrixN - matrixM, p='fro', dim=2)
+
+def get_cls_prototypes(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Calculate the prototypes/centroids
+
+    Args:
+        x: input data
+        y: corresponding labels
+
+    Returns: a tensor of prototypes with shape (C, d),
+        where C is the number of classes, d is the embedding dimension
+    """
+    _, d = x.shape
+    cls_idx = torch.unique(input=y, return_counts=False)
+    C = cls_idx.shape[0]
+
+    prototypes = torch.empty(size=(C, d), device=x.device)
+    for c in range(C):
+        prototypes[c, :] = torch.mean(input=x[y == cls_idx[c]], dim=0)
+
+    return prototypes
+
+def kl_divergence_gaussians(p: typing.List[torch.Tensor], q: typing.List[torch.Tensor]) -> torch.Tensor:
+    """Calculate KL divergence between 2 diagonal Gaussian
+
+    Args: each paramter is list with 1st half as mean, and the 2nd half is log_std
+
+    Returns: KL divergence
+    """
+    assert len(p) == len(q)
+
+    n = len(p) // 2
+
+    kl_div = 0
+    for i in range(n):
+        p_mean = p[i]
+        p_log_std = p[n + i]
+
+        q_mean = q[i]
+        q_log_std = q[n + i]
+
+        s1_vec = torch.exp(input=2 * q_log_std)
+        mahalanobis = torch.sum(input=torch.square(input=p_mean - q_mean) / s1_vec)
+
+        tr_s1inv_s0 = torch.sum(input=torch.exp(input=2 * (p_log_std - q_log_std)))
+
+        log_det = 2 * torch.sum(input=q_log_std - p_log_std)
+
+        kl_div_temp = mahalanobis + tr_s1inv_s0 + log_det - torch.numel(p_mean)
+        kl_div_temp = kl_div_temp / 2
+
+        kl_div = kl_div + kl_div_temp
+
+    return kl_div
+
+def vector_to_list_parameters(vec: torch.Tensor, parameter_shapes: typing.List) -> torch.Tensor:
+    """
+    """
+    params = []
+
+    # Pointer for slicing the vector for each parameter
+    pointer = 0
+
+    for param_shape in parameter_shapes:
+        # The length of the parameter
+        num_param = np.prod(a=param_shape)
+
+        params.append(vec[pointer:pointer + num_param].view(param_shape))
+
+        # Increment the pointer
+        pointer += num_param
+    
+    return params
+
+def layernorm_weight_keys(module: torch.nn.Module) -> typing.Set[str]:
+    """state_dict keys of the scale (gamma) of every LayerNorm in module
+    """
+    return {'{0:s}.weight'.format(name) for name, m in module.named_modules() if isinstance(m, torch.nn.LayerNorm) and m.elementwise_affine}
+
+def intialize_parameters(state_dict: dict, ones_keys: typing.Collection[str] = ()) -> typing.List[torch.Tensor]:
+    """Kaiming-normal for weights (ndim > 1), zeros for 1-D tensors (biases)
+
+    Args:
+        state_dict: state dictionary of the base network
+        ones_keys: keys of 1-D tensors initialized to ones instead of zeros, i.e. LayerNorm scales.
+            A LayerNorm scale of 0 outputs a constant and blocks all gradients below it, so the
+            network cannot learn (see layernorm_weight_keys). Empty by default, which keeps
+            master's behaviour for every network without LayerNorm (including BatchNorm in CNN/ResNet).
+    """
+    p = list(state_dict.values())
+    for key, m in state_dict.items():
+        if m.ndim > 1:
+            torch.nn.init.kaiming_normal_(tensor=m, nonlinearity='relu')
+        elif key in ones_keys:
+            torch.nn.init.ones_(tensor=m)
+        else:
+            torch.nn.init.zeros_(tensor=m)
+
+    return p
+
+def torch_module_to_functional(torch_net: torch.nn.Module) -> higher.patch._MonkeyPatchBase:
+    """Convert a conventional torch module to its "functional" form
+    """
+    f_net = higher.patch.make_functional(module=torch_net)
+    f_net.track_higher_grads = False
+    f_net._fast_params = [[]]
+
+    return f_net
+
+# --------------------------------------------------
+# Checkpoint / training-history helpers shared by MLBaseClass.train and Platipus.train
+# --------------------------------------------------
+def list_epoch_checkpoints(logdir: str) -> typing.Dict[int, str]:
+    """Map epoch number -> path for every Epoch_{N}.pt file in logdir
+    """
+    checkpoints = {}
+    for path in glob.glob(os.path.join(logdir, 'Epoch_*.pt')):
+        match = re.fullmatch(r'Epoch_(\d+)\.pt', os.path.basename(path))
+        if match:
+            checkpoints[int(match.group(1))] = path
+    return checkpoints
+
+def clear_run_artifacts(logdir: str) -> None:
+    """Remove Epoch_*.pt, best_model.pt and training_history.json left in logdir by a previous run.
+
+    Called when a fresh run starts (resume_epoch == 0), so that files of an older (e.g. longer) run
+    cannot be picked up as if they belonged to the new run.
+    """
+    stale_files = list(list_epoch_checkpoints(logdir=logdir).values())
+    stale_files += [os.path.join(logdir, 'best_model.pt'), os.path.join(logdir, 'training_history.json')]
+
+    num_removed = 0
+    for path in stale_files:
+        if os.path.isfile(path):
+            os.remove(path)
+            num_removed += 1
+
+    if num_removed > 0:
+        print('Fresh run (resume_epoch = 0): removed {0:d} file(s) left by a previous run in {1:s}\n'.format(num_removed, logdir))
+
+def validation_due(config: dict, epoch_id: int) -> bool:
+    """Whether validation runs at the end of epoch_id (0-based)
+
+    config['validate_every_n_epochs'] (default 1 = every epoch, 0 = never). When enabled,
+    the final epoch is always validated.
+    """
+    every_n_epochs = int(config.get('validate_every_n_epochs', 1))
+    if every_n_epochs <= 0:
+        return False
+
+    final_epoch = config['resume_epoch'] + config['num_epochs']
+    return ((epoch_id + 1) % every_n_epochs == 0) or (epoch_id + 1 == final_epoch)
+
+def save_epoch_checkpoint(
+    model: dict,
+    config: dict,
+    epoch_id: int,
+    val_nll: typing.Optional[float],
+    val_acc: typing.Optional[float]
+) -> str:
+    """Save Epoch_{N}.pt, update training_history.json and keep best_model.pt (highest val_acc)
+
+    val_nll and val_acc are None for epochs that were not validated; such epochs are recorded
+    in the history but are never selected as the best checkpoint.
+
+    Returns: path of the saved checkpoint
+    """
+    checkpoint = {
+        "epoch": epoch_id + 1,
+        "hyper_net_state_dict": model["hyper_net"].state_dict(),
+        "opt_state_dict": model["optimizer"].state_dict(),
+        "val_acc": val_acc,
+        "val_nll": val_nll
+    }
+    checkpoint_path = os.path.join(config['logdir'], 'Epoch_{0:d}.pt'.format(epoch_id + 1))
+    torch.save(obj=checkpoint, f=checkpoint_path)
+
+    # maintain training history & best checkpoint
+    history_file = os.path.join(config['logdir'], 'training_history.json')
+    history = {"epochs": [], "best_checkpoint": None}
+    if os.path.exists(history_file):
+        try:
+            with open(history_file, 'r', encoding='utf-8') as hf:
+                history = json.load(hf)
+        except Exception:
+            history = {"epochs": [], "best_checkpoint": None}
+
+    epoch_record = {
+        "epoch": epoch_id + 1,
+        "val_acc": val_acc,
+        "val_nll": val_nll,
+        "checkpoint_path": checkpoint_path
+    }
+    history["epochs"].append(epoch_record)
+
+    curr_best = history.get("best_checkpoint")
+    if val_acc is not None and (curr_best is None or curr_best.get("val_acc") is None or val_acc >= curr_best["val_acc"]):
+        history["best_checkpoint"] = epoch_record
+        torch.save(obj=checkpoint, f=os.path.join(config['logdir'], 'best_model.pt'))
+
+    try:
+        with open(history_file, 'w', encoding='utf-8') as hf:
+            json.dump(history, hf, indent=2)
+    except Exception:
+        pass
+
+    final_epoch = config['resume_epoch'] + config['num_epochs']
+    if val_acc is not None:
+        print(f"[Epoch {epoch_id + 1}/{final_epoch}] Saved to {checkpoint_path} | Val NLL: {val_nll:.4f} | Val Acc: {val_acc:.2f}%")
+    else:
+        print(f"[Epoch {epoch_id + 1}/{final_epoch}] Saved to {checkpoint_path}")
+
+    return checkpoint_path
+
+def resolve_test_epoch(config: dict, last_trained_epoch: typing.Optional[int] = None) -> int:
+    """Select the checkpoint epoch evaluated by test()
+
+    Priority:
+        1. last_trained_epoch: the final epoch of a train() call made on the same object, so a
+           train-then-test script always scores the model it has just trained (also after resuming)
+        2. config['resume_epoch'] if > 0: an explicitly requested checkpoint
+        3. the latest Epoch_*.pt found in config['logdir']
+
+    Raises FileNotFoundError when no checkpoint can be found, instead of silently testing an
+    untrained (randomly initialized) model.
+    """
+    if last_trained_epoch is not None and last_trained_epoch > 0:
+        return last_trained_epoch
+
+    resume_epoch = config.get('resume_epoch', 0) or 0
+    if resume_epoch > 0:
+        return resume_epoch
+
+    checkpoints = list_epoch_checkpoints(logdir=config['logdir'])
+    if len(checkpoints) == 0:
+        raise FileNotFoundError('No checkpoint (Epoch_*.pt) found in {0:s}. Train a model first or set resume_epoch.'.format(config['logdir']))
+
+    latest_epoch = max(checkpoints)
+    print('resume_epoch is not set: testing the latest checkpoint Epoch_{0:d}.pt\n'.format(latest_epoch))
+    return latest_epoch
+
+
+class FocalLoss(torch.nn.Module):
+    """
+    Multi-class / Binary Focal Loss implementation with class balancing weights.
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+    """
+    def __init__(self, alpha: typing.Optional[typing.Union[float, torch.Tensor, typing.List[float]]] = 0.25, gamma: float = 2.0, reduction: str = 'mean') -> None:
+        super(FocalLoss, self).__init__()
+        if alpha is not None:
+            if isinstance(alpha, (float, int)):
+                # For binary classification: class 0 gets (1 - alpha), class 1 gets alpha
+                alpha = torch.tensor([1.0 - float(alpha), float(alpha)], dtype=torch.float32)
+            elif not isinstance(alpha, torch.Tensor):
+                alpha = torch.tensor(alpha, dtype=torch.float32)
+            self.register_buffer('alpha', alpha)
+        else:
+            self.alpha = None
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            input: (N, C) logits
+            target: (N,) ground truth class indices
+        """
+        log_p = torch.nn.functional.log_softmax(input, dim=-1)
+        p = torch.exp(log_p)
+
+        target_reshaped = target.view(-1, 1)
+        log_pt = log_p.gather(dim=-1, index=target_reshaped).view(-1)
+        pt = p.gather(dim=-1, index=target_reshaped).view(-1)
+
+        focal_weight = (1.0 - pt) ** self.gamma
+        loss = -focal_weight * log_pt
+
+        if self.alpha is not None:
+            alpha = self.alpha.to(input.device)
+            alpha_t = alpha.gather(dim=0, index=target.view(-1))
+            loss = alpha_t * loss
+
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
+

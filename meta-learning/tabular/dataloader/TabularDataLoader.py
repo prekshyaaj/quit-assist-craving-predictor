@@ -1,0 +1,193 @@
+import os
+import json
+import torch
+import typing
+from pathlib import Path
+from torch.utils.data import Dataset, DataLoader
+
+
+def load_config(config_path: typing.Optional[str] = None) -> typing.Dict[str, typing.Any]:
+    """
+    Loads the centralized tabular JSON configuration.
+    Defaults to tabular/config.json if not specified.
+    """
+    if config_path is None:
+        repo_root = Path(__file__).resolve().parents[2]
+        config_path = os.path.join(repo_root, "tabular", "config.json")
+    
+    if os.path.exists(config_path):
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def resolve_device(device_str: typing.Optional[typing.Union[str, torch.device]] = "cpu") -> torch.device:
+    """
+    Resolves 'cuda', 'cuda:0', 'gpu', or torch.device to torch.device.
+    Falls back gracefully to CPU if CUDA is requested but unavailable.
+    """
+    if device_str is None:
+        return torch.device("cpu")
+
+    if isinstance(device_str, torch.device):
+        if device_str.type == "cuda" and not torch.cuda.is_available():
+            print("WARNING: CUDA was requested but is not available on this system. Falling back to CPU.")
+            return torch.device("cpu")
+        return device_str
+
+    dev_str = str(device_str).strip().lower()
+    if dev_str.startswith("cuda") or dev_str == "gpu":
+        if torch.cuda.is_available():
+            target_str = str(device_str).strip() if dev_str != "gpu" else "cuda"
+            return torch.device(target_str)
+        print("WARNING: CUDA was requested but is not available on this system. Falling back to CPU.")
+        return torch.device("cpu")
+    return torch.device("cpu")
+
+
+def find_best_checkpoint(log_dir: str, mode: str = "best") -> typing.Tuple[int, str, typing.Optional[float]]:
+    """
+    Scans log_dir to find checkpoint based on selection mode:
+      - mode='best': finds checkpoint with highest validation accuracy.
+      - mode='last': finds the last / final training epoch checkpoint.
+    Returns:
+      (selected_epoch, selected_checkpoint_path, val_accuracy_if_available)
+    """
+    import glob
+    import re
+
+    if not os.path.exists(log_dir):
+        raise FileNotFoundError(f"Log directory not found: {log_dir}")
+
+    # Search for Epoch_*.pt files
+    pt_files = glob.glob(os.path.join(log_dir, "Epoch_*.pt"))
+    if not pt_files:
+        raise FileNotFoundError(f"No checkpoint files (Epoch_*.pt) found in: {log_dir}")
+
+    # 1. If mode is "last" / "final", directly pick the highest epoch number
+    if str(mode).lower() in ("last", "final", "last_epoch"):
+        max_epoch = -1
+        max_path = None
+        for fpath in pt_files:
+            match = re.search(r"Epoch_(\d+)\.pt$", os.path.basename(fpath))
+            if match:
+                ep = int(match.group(1))
+                if ep > max_epoch:
+                    max_epoch = ep
+                    max_path = fpath
+        if max_epoch >= 0:
+            val_acc = None
+            try:
+                ckpt_data = torch.load(max_path, map_location="cpu", weights_only=False)
+                if isinstance(ckpt_data, dict) and "val_acc" in ckpt_data and ckpt_data["val_acc"] is not None:
+                    val_acc = float(ckpt_data["val_acc"])
+            except Exception:
+                pass
+            return max_epoch, max_path, val_acc
+
+    # 2. Otherwise (mode is "best" / "highest_val_acc")
+    # Check training_history.json first
+    history_file = os.path.join(log_dir, "training_history.json")
+    if os.path.exists(history_file):
+        try:
+            with open(history_file, "r", encoding="utf-8") as f:
+                history = json.load(f)
+            best = history.get("best_checkpoint")
+            if best and "epoch" in best:
+                epoch_num = int(best["epoch"])
+                ckpt_path = os.path.join(log_dir, f"Epoch_{epoch_num}.pt")
+                if os.path.exists(ckpt_path):
+                    return epoch_num, ckpt_path, best.get("val_acc")
+        except Exception:
+            pass
+
+    best_epoch = None
+    best_acc = -1.0
+    best_path = None
+    max_epoch = 0
+
+    for fpath in pt_files:
+        match = re.search(r"Epoch_(\d+)\.pt$", os.path.basename(fpath))
+        if not match:
+            continue
+        ep = int(match.group(1))
+        if ep > max_epoch:
+            max_epoch = ep
+
+        # Try reading saved metadata inside checkpoint
+        try:
+            ckpt_data = torch.load(fpath, map_location="cpu", weights_only=False)
+            if isinstance(ckpt_data, dict) and "val_acc" in ckpt_data and ckpt_data["val_acc"] is not None:
+                acc = float(ckpt_data["val_acc"])
+                if acc > best_acc or best_epoch is None:
+                    best_acc = acc
+                    best_epoch = ep
+                    best_path = fpath
+                continue
+        except Exception:
+            pass
+
+    if best_epoch is None:
+        best_epoch = max_epoch
+        best_path = os.path.join(log_dir, f"Epoch_{best_epoch}.pt")
+
+    return best_epoch, best_path, (best_acc if best_acc >= 0 else None)
+
+
+
+class TabularDataset(Dataset):
+    """
+    A simple map-style Dataset that loads precomputed episodic tasks
+    from the .pt files generated by Preprocessing.py.
+    """
+    def __init__(self, data_path: str, device: typing.Optional[torch.device] = None):
+        """
+        Args:
+            data_path (str): Path to the .pt file (e.g., 'dataset_prepro_routine_generated_train_tasks.pt')
+            device (torch.device, optional): Device to preload tensors onto.
+        """
+        self.episodes = torch.load(data_path, weights_only=False)
+        
+        if device is not None:
+            for i in range(len(self.episodes)):
+                self.episodes[i]['x_s'] = self.episodes[i]['x_s'].to(device)
+                self.episodes[i]['y_s'] = self.episodes[i]['y_s'].to(device)
+                self.episodes[i]['x_q'] = self.episodes[i]['x_q'].to(device)
+                self.episodes[i]['y_q'] = self.episodes[i]['y_q'].to(device)
+
+    def __len__(self) -> int:
+        return len(self.episodes)
+        
+    def __getitem__(self, idx: int) -> typing.Dict[str, torch.Tensor]:
+        """
+        Returns a dictionary containing:
+            x_s (Tensor): Support set features
+            y_s (Tensor): Support set labels
+            x_q (Tensor): Query set features
+            y_q (Tensor): Query set labels
+            task_id (int): ID of the task
+        """
+        return self.episodes[idx]
+
+
+def tabular_train_val_split(eps_data: typing.Dict[str, torch.Tensor], **kwargs) -> typing.Dict[str, torch.Tensor]:
+    """
+    Split function to seamlessly integrate with MLBaseClass and Maml architectures.
+    Maps support (s) -> train (t) and query (q) -> validation (v).
+    """
+    return {
+        'x_t': eps_data['x_s'].squeeze(0),
+        'y_t': eps_data['y_s'].squeeze(0),
+        'x_v': eps_data['x_q'].squeeze(0),
+        'y_v': eps_data['y_q'].squeeze(0),
+    }
+
+
+def get_tabular_dataloader(data_path: str, shuffle: bool = True, device: typing.Optional[torch.device] = None) -> DataLoader:
+    """
+    Convenience function to get the dataloader for the tabular tasks.
+    Batch size is strictly 1 because MLBaseClass/Maml processes one task at a time 
+    in the inner loop logic.
+    """
+    dataset = TabularDataset(data_path, device=device)
+    return DataLoader(dataset, batch_size=1, shuffle=shuffle)

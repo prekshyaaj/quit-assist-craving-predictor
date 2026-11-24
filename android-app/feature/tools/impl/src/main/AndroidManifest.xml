@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- "Why I Quit?" lets the user record a voice note. (Already declared by core:voice too.) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+</manifest>

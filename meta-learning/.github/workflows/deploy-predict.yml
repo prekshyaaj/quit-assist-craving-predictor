@@ -1,0 +1,70 @@
+# Rebuilds and redeploys the MAML+FcNet prediction server on Azure Container Apps
+# whenever model/server files change on MyEdits3, or when "Run workflow" is clicked.
+name: Deploy predict-server
+
+on:
+  push:
+    branches: [MyEdits3]
+    paths:
+      - "deploy/**"
+      - "Maml.py"
+      - "MLBaseClass.py"
+      - "HyperNetClasses.py"
+      - "CommonModels.py"
+      - "_utils.py"
+      - "tabular/config.json"
+      - "tabular/scripts/Preprocessing.py"
+      - "tabular/data/processed/dataset_prepro_routine_generated_meta.pt"
+      - "tabular/outputs/logs_maml_fcnet/Epoch_100.pt"
+      - ".github/workflows/deploy-predict.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # lets GitHub sign in to Azure without a stored password (OIDC)
+  contents: read
+
+concurrency:
+  group: deploy-predict
+  cancel-in-progress: true
+
+env:
+  ACR: smokeappvoice27128
+  APP: predict-server
+  RG: smokeapp-rg
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build and push image
+        run: |
+          az acr login -n "$ACR"
+          IMAGE="$ACR.azurecr.io/$APP:${GITHUB_SHA::7}"
+          docker build -f deploy/Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Azure Container Apps
+        run: |
+          az extension add --name containerapp --upgrade -y --only-show-errors
+          az containerapp update -n "$APP" -g "$RG" --image "$IMAGE" --only-show-errors -o none
+
+      - name: Check the live server
+        run: |
+          URL="https://$(az containerapp show -n "$APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)"
+          for i in 1 2 3 4 5 6; do curl -fsS -m 90 "$URL/health" && exit 0; sleep 10; done
+          echo "Server did not become healthy" && exit 1
+
+      - name: Delete old images (keep newest 3) so the registry stays under its free 10 GB
+        continue-on-error: true
+        run: |
+          az acr repository show-tags -n "$ACR" --repository "$APP" --orderby time_desc -o tsv \
+            | tail -n +4 | xargs -r -I{} az acr repository delete -n "$ACR" --image "$APP:{}" --yes --only-show-errors

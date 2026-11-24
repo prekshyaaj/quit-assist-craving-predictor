@@ -1,0 +1,5 @@
+.env
+chatbot_env/
+__pycache__/
+main_backup.py
+.DS_Store

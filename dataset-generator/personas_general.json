@@ -1,0 +1,237 @@
+{
+    "seeds": {
+        "base": 42,
+        "persona": 101,
+        "sleep": 102,
+        "structured": 103,
+        "unstructured": 104,
+        "commute": 105,
+        "location_risk": 106,
+        "smoking": 107,
+        "hr_noise": 108,
+        "time_risk": 109,
+        "wake_buffer": 110
+    },
+    "time_risk_probabilities": {
+        "after_waking": 0.60,
+        "midday_break": 0.45,
+        "post_break": 0.30,
+        "late_day": 0.40,
+        "before_bed": 0.35
+    },
+    "generation": {
+        "full_simulation": {
+            "input_csv": "dataset_prepro.csv",
+            "days_per_task": 3,
+            "output_csv": "dataset_prepro_routine_generated.csv",
+            "verbose": false
+        },
+        "sleep_profiles": {
+            "night_sleeper": {
+                "template": [[23.0, 7.0], [14.0, 14.75]],
+                "start_std": 0.3,
+                "end_std": 0.3,
+                "non_main_assignment_probability": [0.3],
+                "non_main_visit_probability": [0.5],
+                "min_non_main_minutes": 20.0
+            },
+            "day_sleeper": {
+                "template": [[8.0, 16.0], [23.0, 23.75]],
+                "start_std": 0.3,
+                "end_std": 0.3,
+                "non_main_assignment_probability": [0.3],
+                "non_main_visit_probability": [0.5],
+                "min_non_main_minutes": 20.0
+            }
+        },
+        "activities": {
+            "gym": {
+                "visit_probability": 0.40,
+                "duration_mean": 1.5,
+                "duration_std": 0.4,
+                "max_visits_per_day": 1,
+                "cooldown_hours": 2.0,
+                "preferred_windows": {
+                    "night_sleeper": [[7.0, 2.0], [17.0, 2.0]],
+                    "day_sleeper": [[20.0, 3.0]]
+                }
+            },
+            "restaurant": {
+                "visit_probability": 0.35,
+                "duration_mean": 1.0,
+                "duration_std": 0.3,
+                "max_visits_per_day": 2,
+                "cooldown_hours": 2.0,
+                "preferred_windows": {
+                    "night_sleeper": [[12.5, 1.5], [19.5, 1.5]],
+                    "day_sleeper": [[18.0, 2.0], [23.0, 2.0]]
+                }
+            },
+            "market": {
+                "visit_probability": 0.20,
+                "duration_mean": 1.0,
+                "duration_std": 0.3,
+                "max_visits_per_day": 1,
+                "cooldown_hours": 2.0,
+                "preferred_windows": {
+                    "night_sleeper": [[8.0, 2.0], [17.0, 2.0]],
+                    "day_sleeper": [[19.0, 3.0]]
+                }
+            },
+            "entertainment": {
+                "visit_probability": 0.20,
+                "duration_mean": 2.0,
+                "duration_std": 0.5,
+                "max_visits_per_day": 1,
+                "cooldown_hours": 2.0,
+                "preferred_windows": {
+                    "night_sleeper": [[18.0, 3.0]],
+                    "day_sleeper": [[20.0, 3.0]]
+                }
+            },
+            "public_place": {
+                "visit_probability": 0.30,
+                "duration_mean": 1.25,
+                "duration_std": 0.5,
+                "max_visits_per_day": 2,
+                "cooldown_hours": 2.0,
+                "preferred_windows": {
+                    "night_sleeper": [[10.0, 3.0], [17.0, 3.0]],
+                    "day_sleeper": [[18.0, 4.0]]
+                }
+            },
+            "hospital": {
+                "visit_probability": 0.08,
+                "duration_mean": 1.5,
+                "duration_std": 0.5,
+                "max_visits_per_day": 1,
+                "cooldown_hours": 2.0,
+                "preferred_windows": {
+                    "night_sleeper": [[10.0, 4.0], [15.0, 3.0]],
+                    "day_sleeper": [[18.0, 4.0]]
+                }
+            }
+        },
+        "location_risk_probabilities": {
+            "home": 0.500,
+            "office": 0.241,
+            "restaurant": 0.394,
+            "construction_site": 0.468,
+            "hospital": 0.157,
+            "public_place": 0.468,
+            "school": 0.034,
+            "gym": 0.040,
+            "market": 0.280,
+            "entertainment": 0.394
+        },
+        "commute": {
+            "min_minutes": 5.0
+        },
+        "wake_up_buffer": {
+            "min_slots": 3,
+            "max_slots": 4
+        },
+        "smoke_risk": {
+            "location": {"high": 0.400, "low": 0.015},
+            "time": {"high": 0.25, "low": 0.015},
+            "tsls": {"low": 0.015, "high": 0.35, "max_minutes": 120.0}
+        }
+    },
+    "office_worker": {
+        "location_name": "Office",
+        "apply_method": "apply_office_goer",
+        "visit_prob": 0.50,
+        "day_sleeper_prob": 0.022,
+        "smoke_risk": {"location": {"high": 0.30}, "time": {"high": 0.30}},
+        "structured": {
+            "start_std": 0.5,
+            "end_std": 0.5,
+            "templates": {
+                "night_sleeper": [[9.0, 17.0]],
+                "day_sleeper": [[17.0, 1.0]]
+            }
+        }
+    },
+    "factory_worker": {
+        "location_name": "Factory",
+        "apply_method": "apply_factory_goer",
+        "visit_prob": 0.95,
+        "day_sleeper_prob": 0.072,
+        "smoke_risk": {"location": {"high": 0.45}, "time": {"high": 0.30}},
+        "structured": {
+            "start_std": 0.5,
+            "end_std": 0.5,
+            "templates": {
+                "night_sleeper": [[9.0, 17.5]],
+                "day_sleeper": [[19.0, 3.5]]
+            }
+        }
+    },
+    "construction_worker": {
+        "location_name": "Construction Site",
+        "apply_method": "apply_construction_site_goer",
+        "visit_prob": 0.96,
+        "day_sleeper_prob": 0.015,
+        "smoke_risk": {"location": {"high": 0.50}, "tsls": {"max_minutes": 90.0}},
+        "structured": {
+            "start_std": 0.6,
+            "end_std": 0.6,
+            "templates": {
+                "night_sleeper": [[8.0, 16.5]],
+                "day_sleeper": [[17.0, 2.0]]
+            }
+        }
+    },
+    "student": {
+        "location_name": "School",
+        "apply_method": "apply_school_goer",
+        "visit_prob": 0.85,
+        "day_sleeper_prob": 0.056,
+        "smoke_risk": {"location": {"high": 0.30}, "time": {"high": 0.30}, "tsls": {"max_minutes": 150.0}},
+        "structured": {
+            "start_std": 0.4,
+            "end_std": 0.4,
+            "templates": {
+                "night_sleeper": [[10.5, 16.5]],
+                "day_sleeper": [[18.5, 0.5]]
+            }
+        }
+    },
+    "retired": {
+        "location_name": "Home",
+        "apply_method": null,
+        "visit_prob": 0.0,
+        "day_sleeper_prob": 0.033,
+        "smoke_risk": {"location": {"high": 0.45}, "time": {"high": 0.20}, "tsls": {"max_minutes": 100.0}}
+    },
+    "service_worker": {
+        "location_name": "Public Place",
+        "apply_method": "apply_transportation_goer",
+        "visit_prob": 0.85,
+        "day_sleeper_prob": 0.060,
+        "smoke_risk": {"location": {"high": 0.30}, "time": {"high": 0.30}},
+        "structured": {
+            "start_std": 0.5,
+            "end_std": 0.5,
+            "templates": {
+                "night_sleeper": [[8.0, 16.0]],
+                "day_sleeper": [[18.0, 2.0]]
+            }
+        }
+    },
+    "transportation_worker": {
+        "location_name": "Public Place",
+        "apply_method": "apply_transportation_goer",
+        "visit_prob": 0.85,
+        "day_sleeper_prob": 0.053,
+        "smoke_risk": {"location": {"high": 0.35}, "tsls": {"max_minutes": 150.0}},
+        "structured": {
+            "start_std": 0.5,
+            "end_std": 0.5,
+            "templates": {
+                "night_sleeper": [[8.0, 16.0]],
+                "day_sleeper": [[18.0, 2.0]]
+            }
+        }
+    }
+}
